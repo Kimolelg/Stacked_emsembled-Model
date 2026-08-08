@@ -825,7 +825,7 @@ Human oversight is **required** for any high-risk flag.
 
 ---
 
-## 21. Handover checklist for the next engineer
+## 21. Checklist To Run on your Own
 
 **First hour**
 
