@@ -1,0 +1,14 @@
+# Feast feature store config — Teacher Mental Health Risk
+# Local provider, file offline store, sqlite online store
+#
+# Paths are relative to this feature_repo/ directory.
+
+project: teacher_mental_health
+registry: ../data/feast/registry.db
+provider: local
+online_store:
+  type: sqlite
+  path: ../data/feast/online_store.db
+offline_store:
+  type: file
+entity_key_serialization_version: 2

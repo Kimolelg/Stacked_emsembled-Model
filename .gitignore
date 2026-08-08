@@ -1,0 +1,32 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+venv_py314_broken/
+
+# MLflow
+mlruns/
+mlflow.db
+mlflow.db-*
+mlflow.db.bak_20260807_193534
+# Feast
+data/feast/*.db
+data/feast/*.parquet
+# keep schema if committed optionally; ignore large stores
+feature_repo/.feastignore
+
+# Monitoring (Evidently)
+data/monitoring/production_predictions.*
+data/monitoring/reference_snapshot.parquet
+data/monitoring/reports/
+data/monitoring/last_drift_summary.json
+
+# Local artifacts / secrets
+*.log
+.env
+.DS_Store
+
+# CatBoost
+catboost_info/

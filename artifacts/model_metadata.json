@@ -1,0 +1,60 @@
+{
+  "model_type": "meta4",
+  "description": "Custom stack: cal RF/XGB/Cat \u2192 XGB meta with PHQ sample weights",
+  "n_features": 222,
+  "registered_model_name": "teacher-mental-health-risk-meta4",
+  "metrics_test": {
+    "accuracy": 0.7778,
+    "precision": 0.8288,
+    "recall": 0.8353,
+    "precision_macro": 0.7529,
+    "recall_macro": 0.751,
+    "f1_high_risk": 0.832,
+    "macro_f1": 0.7519,
+    "roc_auc": 0.8305,
+    "average_precision": 0.8749,
+    "threshold": 0.5
+  },
+  "metrics_train": {
+    "accuracy": 0.9942,
+    "precision": 0.9951,
+    "recall": 0.9961,
+    "precision_macro": 0.9938,
+    "recall_macro": 0.9933,
+    "f1_high_risk": 0.9956,
+    "macro_f1": 0.9935,
+    "roc_auc": 0.9974,
+    "average_precision": 0.9975,
+    "threshold": 0.5
+  },
+  "train_info": {
+    "resampled_n": 2022,
+    "n_features": 222,
+    "borderline_weight": 0.4,
+    "class_balance_resampled": {
+      "1": 0.5,
+      "0": 0.5
+    },
+    "base_models": [
+      "cal_rf",
+      "cal_xgb",
+      "cal_cat"
+    ],
+    "meta_learner": "XGBClassifier",
+    "resampling": "SMOTETomek + PHQ sample weights"
+  },
+  "artifact": "meta4.joblib",
+  "target_definition": "High_Risk = PHQ_Total >= 15",
+  "random_state": 42,
+  "test_size": 0.2,
+  "note": "No auto production alias. Promote in MLflow UI only.",
+  "mlflow": {
+    "run_id": "2e91e413d27a4eb8afc1d839987cf715",
+    "model_uri": "runs:/2e91e413d27a4eb8afc1d839987cf715/model",
+    "registered_model": "teacher-mental-health-risk-meta4",
+    "version": "2",
+    "aliases": [
+      "latest (built-in)"
+    ]
+  }
+}

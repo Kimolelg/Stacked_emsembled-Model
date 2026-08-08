@@ -1,0 +1,54 @@
+{
+  "model_type": "meta1",
+  "description": "Stack: cal RF + XGB + CatBoost \u2192 XGB (raw train; BorderlineSMOTE prepared)",
+  "n_features": 222,
+  "registered_model_name": "teacher-mental-health-risk-meta1",
+  "metrics_test": {
+    "accuracy": 0.7984,
+    "precision": 0.829,
+    "recall": 0.8745,
+    "precision_macro": 0.7789,
+    "recall_macro": 0.763,
+    "f1_high_risk": 0.8511,
+    "macro_f1": 0.7696,
+    "roc_auc": 0.8543,
+    "average_precision": 0.9105,
+    "threshold": 0.5
+  },
+  "metrics_train": {
+    "accuracy": 0.9036,
+    "precision": 0.8883,
+    "recall": 0.9764,
+    "precision_macro": 0.916,
+    "recall_macro": 0.8698,
+    "f1_high_risk": 0.9303,
+    "macro_f1": 0.8871,
+    "roc_auc": 0.9384,
+    "average_precision": 0.9622,
+    "threshold": 0.5
+  },
+  "train_info": {
+    "resampling": "BorderlineSMOTE (prepared; stack on raw train)",
+    "resampled_n": 2036,
+    "base_models": [
+      "cal_rf_isotonic",
+      "xgb",
+      "catboost"
+    ],
+    "meta_learner": "XGBClassifier"
+  },
+  "artifact": "meta1.joblib",
+  "target_definition": "High_Risk = PHQ_Total >= 15",
+  "random_state": 42,
+  "test_size": 0.2,
+  "note": "No auto production alias. Promote in MLflow UI only.",
+  "mlflow": {
+    "run_id": "3a1624d80acf4822b3beb5273bca1d18",
+    "model_uri": "runs:/3a1624d80acf4822b3beb5273bca1d18/model",
+    "registered_model": "teacher-mental-health-risk-meta1",
+    "version": "4",
+    "aliases": [
+      "latest (built-in)"
+    ]
+  }
+}

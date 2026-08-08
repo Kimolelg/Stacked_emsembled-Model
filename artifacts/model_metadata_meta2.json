@@ -1,0 +1,55 @@
+{
+  "model_type": "meta2",
+  "description": "Stack: RF + XGB + Cat + LGBM \u2192 XGB (BorderlineSMOTE)",
+  "n_features": 222,
+  "registered_model_name": "teacher-mental-health-risk-meta2",
+  "metrics_test": {
+    "accuracy": 0.7855,
+    "precision": 0.8613,
+    "recall": 0.8039,
+    "precision_macro": 0.7629,
+    "recall_macro": 0.777,
+    "f1_high_risk": 0.8316,
+    "macro_f1": 0.7681,
+    "roc_auc": 0.8478,
+    "average_precision": 0.9037,
+    "threshold": 0.5
+  },
+  "metrics_train": {
+    "accuracy": 0.9107,
+    "precision": 0.9183,
+    "recall": 0.9489,
+    "precision_macro": 0.9065,
+    "recall_macro": 0.893,
+    "f1_high_risk": 0.9333,
+    "macro_f1": 0.8992,
+    "roc_auc": 0.9755,
+    "average_precision": 0.9871,
+    "threshold": 0.5
+  },
+  "train_info": {
+    "resampling": "BorderlineSMOTE",
+    "resampled_n": 2036,
+    "base_models": [
+      "rf",
+      "xgb",
+      "catboost",
+      "lgbm"
+    ],
+    "meta_learner": "XGBClassifier"
+  },
+  "artifact": "meta2.joblib",
+  "target_definition": "High_Risk = PHQ_Total >= 15",
+  "random_state": 42,
+  "test_size": 0.2,
+  "note": "No auto production alias. Promote in MLflow UI only.",
+  "mlflow": {
+    "run_id": "377d93d312794a0088bf2ff32d51dbbd",
+    "model_uri": "runs:/377d93d312794a0088bf2ff32d51dbbd/model",
+    "registered_model": "teacher-mental-health-risk-meta2",
+    "version": "3",
+    "aliases": [
+      "latest (built-in)"
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "model_type": "meta3",
+  "description": "Stack: cal RF + XGB + Cat + cal LGBM \u2192 XGB (SMOTETomek + threshold opt)",
+  "n_features": 222,
+  "registered_model_name": "teacher-mental-health-risk-meta3",
+  "metrics_test": {
+    "accuracy": 0.7959,
+    "precision": 0.8099,
+    "recall": 0.902,
+    "precision_macro": 0.7836,
+    "recall_macro": 0.7464,
+    "f1_high_risk": 0.8534,
+    "macro_f1": 0.7586,
+    "roc_auc": 0.8344,
+    "average_precision": 0.8848,
+    "threshold": 0.4
+  },
+  "metrics_train": {
+    "accuracy": 0.9224,
+    "precision": 0.906,
+    "recall": 0.9843,
+    "precision_macro": 0.9348,
+    "recall_macro": 0.8937,
+    "f1_high_risk": 0.9435,
+    "macro_f1": 0.9098,
+    "roc_auc": 0.9673,
+    "average_precision": 0.9754,
+    "threshold": 0.4
+  },
+  "train_info": {
+    "resampling": "SMOTETomek",
+    "resampled_n": 1984,
+    "base_models": [
+      "cal_rf_isotonic",
+      "xgb",
+      "catboost",
+      "cal_lgbm_sigmoid"
+    ],
+    "meta_learner": "XGBClassifier",
+    "threshold": 0.4,
+    "threshold_opt_f1": 0.8534322820037106
+  },
+  "artifact": "meta3.joblib",
+  "target_definition": "High_Risk = PHQ_Total >= 15",
+  "random_state": 42,
+  "test_size": 0.2,
+  "note": "No auto production alias. Promote in MLflow UI only.",
+  "mlflow": {
+    "run_id": "59bd17c819bb4482967f69e4e3813fea",
+    "model_uri": "runs:/59bd17c819bb4482967f69e4e3813fea/model",
+    "registered_model": "teacher-mental-health-risk-meta3",
+    "version": "3",
+    "aliases": [
+      "latest (built-in)"
+    ]
+  }
+}
