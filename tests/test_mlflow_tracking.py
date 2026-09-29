@@ -21,6 +21,7 @@ from src.utils.mlflow_tracking import (  # noqa: E402
     get_model_info,
     load_model_from_registry,
     log_training_run,
+    resolve_registered_model_name,
 )
 
 
@@ -29,6 +30,37 @@ def file_tracking_uri(tmp_path):
     return (tmp_path / "mlruns").as_uri()
 
 
+def test_resolve_base_plus_variant():
+    assert (
+        resolve_registered_model_name("teacher-mental-health-risk", "meta4")
+        == "teacher-mental-health-risk-meta4"
+    )
+    assert (
+        resolve_registered_model_name("teacher-mental-health-risk", "meta1")
+        == "teacher-mental-health-risk-meta1"
+    )
+
+
+def test_resolve_already_full_name():
+    assert (
+        resolve_registered_model_name("teacher-mental-health-risk-meta3", "meta4")
+        == "teacher-mental-health-risk-meta3"
+    )
+
+
+def test_resolve_from_env(monkeypatch):
+    monkeypatch.setenv("MLFLOW_REGISTERED_MODEL_NAME", "teacher-mental-health-risk")
+    monkeypatch.setenv("MLFLOW_MODEL_VARIANT", "rf")
+    assert resolve_registered_model_name() == "teacher-mental-health-risk-rf"
+
+
+def test_resolve_base_without_variant(monkeypatch):
+    monkeypatch.setenv("MLFLOW_REGISTERED_MODEL_NAME", "teacher-mental-health-risk")
+    monkeypatch.setenv("MLFLOW_MODEL_VARIANT", "")
+    assert resolve_registered_model_name() == "teacher-mental-health-risk"
+
+
+@pytest.mark.slow
 def test_log_and_load_without_auto_champion(file_tracking_uri, tmp_path):
     rng = np.random.default_rng(0)
     X = pd.DataFrame(rng.normal(size=(80, 5)), columns=[f"f{i}" for i in range(5)])
@@ -73,7 +105,7 @@ def test_log_and_load_without_auto_champion(file_tracking_uri, tmp_path):
     assert "champion" not in info["aliases"]
     assert "challenger" not in info["aliases"]
 
-    # MLflow built-in @latest resolves to newest version without manual set
+    # Resolve highest version explicitly (not used by serving API)
     loaded = load_model_from_registry(
         model_name=reg_name,
         alias="latest",

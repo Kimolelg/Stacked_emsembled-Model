@@ -43,10 +43,10 @@
   "test_size": 0.2,
   "note": "No auto production alias. Promote in MLflow UI only.",
   "mlflow": {
-    "run_id": "3a1624d80acf4822b3beb5273bca1d18",
-    "model_uri": "runs:/3a1624d80acf4822b3beb5273bca1d18/model",
+    "run_id": "8cc4cb09625c4267bb5c637ec0470ba6",
+    "model_uri": "runs:/8cc4cb09625c4267bb5c637ec0470ba6/model",
     "registered_model": "teacher-mental-health-risk-meta1",
-    "version": "4",
+    "version": "1",
     "aliases": [
       "latest (built-in)"
     ]

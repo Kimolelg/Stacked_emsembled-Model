@@ -1,0 +1,82 @@
+# Local platform: FastAPI + MLflow + React UI
+# Usage (Docker Desktop / WSL2):
+#   docker compose up --build
+# UI:     http://127.0.0.1:3000
+# API:    http://127.0.0.1:8000/docs
+# MLflow: http://127.0.0.1:5000
+#
+# Feast / Evidently remain on the host via scripts/ for this phase.
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Browser on the host talks to published API port
+        VITE_API_BASE_URL: http://127.0.0.1:8000
+    container_name: teacher-mh-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: teacher-mh-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      # SAME store as host script scripts/start_mlflow_server.ps1
+      # Train with MLFLOW_TRACKING_URI=http://127.0.0.1:5000 while this is up
+      - ./mlflow_data:/mlflow
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: teacher-mh-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Discover whichever teacher-mental-health-risk-* has @champion in MLflow UI
+      MLFLOW_LOAD_REGISTRY: "1"
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+      MLFLOW_REGISTERED_MODEL_NAME: "teacher-mental-health-risk"
+      # Leave unset so API auto-picks the single @champion (meta1/2/3/4/rf)
+      MLFLOW_MODEL_VARIANT: ""
+      MLFLOW_MODEL_ALIAS: "champion"
+    volumes:
+      # Live code (so registry-load fixes apply without full rebuild)
+      - ./src:/app/src
+      # Fallback joblibs if champion unavailable
+      - ./artifacts:/app/artifacts:ro
+      # Shared MLflow artifact store (rw: client may write small registry meta files)
+      - ./mlflow_data:/mlflow
+      # Optional Feast data for teacher_id path
+      - ./data/feast:/app/data/feast
+      - ./feature_repo:/app/feature_repo
+      # Shared Evidently logs/reports (host scheduled jobs ↔ API monitoring UI)
+      - ./data/monitoring:/app/data/monitoring
+    depends_on:
+      - mlflow
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 50s

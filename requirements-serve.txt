@@ -1,0 +1,31 @@
+# Runtime dependencies for the FastAPI serving image / compose API service.
+# Full train/ops stack remains in requirements.txt
+
+# Core numeric / model unpickle
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.1
+imbalanced-learn==0.12.3
+xgboost==2.1.1
+lightgbm==4.5.0
+catboost==1.2.5
+joblib==1.4.2
+
+# API
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.12
+
+# Optional registry load from API
+mlflow==2.17.2
+protobuf==4.25.3
+
+# Feature store client (teacher_id path) — keep aligned with train stack
+feast==0.40.1
+pyarrow==16.1.0
+
+# Validation + monitoring hooks used by API routes
+great-expectations==0.18.19
+evidently==0.4.33
+scipy>=1.11.0

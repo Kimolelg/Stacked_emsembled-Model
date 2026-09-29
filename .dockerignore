@@ -1,0 +1,39 @@
+# Build context hygiene — keep Docker builds fast on Windows/Linux
+.git
+.gitignore
+.grok
+.venv
+venv
+venv_py314_broken
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.idea
+.vscode
+
+# Local experiment / store data (mounted at runtime when needed)
+mlruns
+mlflow.db
+mlflow.db.*
+data/feast/*.db
+data/feast/*.parquet
+data/monitoring/production_predictions.*
+data/monitoring/reference_snapshot.parquet
+data/monitoring/reports
+data/monitoring/last_drift_summary.json
+catboost_info
+
+# Notebooks, docs drafts, large survey files
+notebooks
+*.xlsx
+*.xls
+docs
+
+# CI / editor outputs
+**/editor_revisions_outputs
+**/.ipynb_checkpoints
+
+# Do not bake host venv or huge caches into the image
+**/.cache
+**/pip-wheel-metadata

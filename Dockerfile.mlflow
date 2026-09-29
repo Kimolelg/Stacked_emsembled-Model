@@ -1,0 +1,16 @@
+# Lightweight MLflow tracking server for local compose
+# Mount ./mlflow_data -> /mlflow (shared with host start_mlflow_server.ps1)
+FROM python:3.11-slim
+
+WORKDIR /mlflow
+
+RUN pip install --no-cache-dir "mlflow==2.17.2" "protobuf==4.25.3" \
+    && mkdir -p /mlflow/mlruns
+
+EXPOSE 5000
+
+CMD ["mlflow", "server", \
+     "--host", "0.0.0.0", \
+     "--port", "5000", \
+     "--backend-store-uri", "sqlite:////mlflow/mlflow.db", \
+     "--default-artifact-root", "/mlflow/mlruns"]

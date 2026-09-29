@@ -43,7 +43,8 @@ Write-Host "1. Open http://127.0.0.1:5000 → Models → pick a model → Add Al
 Write-Host "2. Start API:"
 Write-Host '   $env:MLFLOW_LOAD_REGISTRY="1"'
 Write-Host '   $env:MLFLOW_TRACKING_URI="http://127.0.0.1:5000"'
-Write-Host '   $env:MLFLOW_REGISTERED_MODEL_NAME="teacher-mental-health-risk-meta4"'
+Write-Host '   $env:MLFLOW_REGISTERED_MODEL_NAME="teacher-mental-health-risk"'
+Write-Host '   $env:MLFLOW_MODEL_VARIANT="meta4"'
 Write-Host '   $env:MLFLOW_MODEL_ALIAS="champion"'
 Write-Host "   uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000"
 Write-Host "3. Check: http://127.0.0.1:8000/health  and  /model-info"

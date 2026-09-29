@@ -49,6 +49,7 @@ def _synthetic_xy(n: int = 120, n_features: int = 12, seed: int = 42):
     return X, y, phq
 
 
+@pytest.mark.slow
 def test_train_meta_model4_smoke():
     X, y, phq = _synthetic_xy()
     feature_order = list(X.columns)

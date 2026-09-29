@@ -6,14 +6,20 @@ __pycache__/
 venv/
 venv_py314_broken/
 
-# MLflow
+# MLflow (legacy paths + shared Docker/host store)
 mlruns/
 mlflow.db
 mlflow.db-*
-mlflow.db.bak_20260807_193534
+mlflow.db.bak*
+mlflow_data/
+docker_data/
+
 # Feast
 data/feast/*.db
 data/feast/*.parquet
+data/feast/uploads/
+data/feast/current_upload.json
+data/monitoring/evidently_schedule.json
 # keep schema if committed optionally; ignore large stores
 feature_repo/.feastignore
 
@@ -22,6 +28,11 @@ data/monitoring/production_predictions.*
 data/monitoring/reference_snapshot.parquet
 data/monitoring/reports/
 data/monitoring/last_drift_summary.json
+data/monitoring/job_logs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # Local artifacts / secrets
 *.log
@@ -30,3 +41,4 @@ data/monitoring/last_drift_summary.json
 
 # CatBoost
 catboost_info/
+notebooks/

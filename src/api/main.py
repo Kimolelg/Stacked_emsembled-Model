@@ -3,9 +3,9 @@ FastAPI — Teacher Mental Health Risk Prediction
 ================================================
 
 Model loading order:
-  1. MLflow registry @champion  (preferred for serving)
-  2. MLflow highest registered version (if no champion yet)
-  3. Local artifacts (meta4 / meta1–3 / rf)
+  1. MLflow registry alias from MLFLOW_MODEL_ALIAS (default @champion only)
+  2. Local artifacts (meta4 / meta1–3 / rf)
+  Never auto-falls back to MLflow's built-in @latest — promote in the UI.
 
 Prediction UX:
   POST /predict       — compact questionnaire → full vector with defaults
@@ -21,15 +21,19 @@ Monitoring (Evidently):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from src.data.data_validation import (
     raise_http_validation_error,
@@ -39,7 +43,21 @@ from src.data.data_validation import (
     validate_questionnaire,
 )
 from src.monitoring.drift_monitor import DriftMonitor, REPORTS_DIR, run_drift_check
+from src.monitoring.job_scheduler import (
+    configure_runner,
+    load_schedule,
+    start_or_refresh_scheduler,
+    stop_scheduler,
+    upsert_schedule,
+)
 from src.monitoring.prediction_logger import get_prediction_logger
+from src.utils.mlflow_tracking import (
+    REGISTRY_BASE_NAME,
+    VALID_MODEL_VARIANTS,
+    discover_champion_model,
+    resolve_registered_model_name,
+)
+from src.utils.phq_estimate import estimate_phq9_from_probability
 
 from .feature_builder import (
     expand_questionnaire_to_features,
@@ -70,10 +88,18 @@ MLFLOW_LOAD_REGISTRY = os.environ.get("MLFLOW_LOAD_REGISTRY", "1").lower() in {
     "true",
     "yes",
 }
-MLFLOW_MODEL_NAME = os.environ.get(
-    "MLFLOW_REGISTERED_MODEL_NAME", "teacher-mental-health-risk-meta4"
+# Base family only. Which meta* is served is decided by @champion in MLflow UI.
+# Optional pin: set MLFLOW_MODEL_VARIANT=meta1 (etc.) to skip discovery.
+MLFLOW_MODEL_VARIANT = os.environ.get("MLFLOW_MODEL_VARIANT", "").strip().lower()
+MLFLOW_REGISTRY_BASE = os.environ.get(
+    "MLFLOW_REGISTERED_MODEL_NAME", REGISTRY_BASE_NAME
+).strip()
+# Filled at load time after champion discovery (or from explicit variant pin)
+MLFLOW_MODEL_NAME = (
+    resolve_registered_model_name(base=MLFLOW_REGISTRY_BASE, variant=MLFLOW_MODEL_VARIANT)
+    if MLFLOW_MODEL_VARIANT
+    else MLFLOW_REGISTRY_BASE
 )
-# Prefer champion (set in MLflow UI after comparing runs)
 MLFLOW_MODEL_ALIAS = os.environ.get("MLFLOW_MODEL_ALIAS", "champion")
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
 
@@ -103,22 +129,23 @@ def _attach_feature_order_from_model() -> None:
         FEATURE_ORDER = list(fo)
 
 
-def _try_mlflow_alias(alias: str) -> bool:
-    """Load models:/{name}@{alias} (or highest version if alias=latest)."""
-    global MODEL, MODEL_NAME, MODEL_SOURCE, MODEL_REGISTRY_INFO
+def _try_mlflow_alias(model_name: str, alias: str) -> bool:
+    """Load models:/{name}@{alias}. Alias must exist (e.g. champion set in UI)."""
+    global MODEL, MODEL_NAME, MODEL_SOURCE, MODEL_REGISTRY_INFO, MLFLOW_MODEL_NAME
     from src.utils.mlflow_tracking import get_model_info, load_model_from_registry
 
     MODEL = load_model_from_registry(
-        model_name=MLFLOW_MODEL_NAME,
+        model_name=model_name,
         alias=alias,
         tracking_uri=MLFLOW_TRACKING_URI,
     )
     MODEL_REGISTRY_INFO = get_model_info(
-        model_name=MLFLOW_MODEL_NAME,
+        model_name=model_name,
         alias=alias,
         tracking_uri=MLFLOW_TRACKING_URI,
     )
-    MODEL_NAME = f"{MLFLOW_MODEL_NAME}@{alias}"
+    MLFLOW_MODEL_NAME = model_name
+    MODEL_NAME = f"{model_name}@{alias}"
     MODEL_SOURCE = "mlflow_registry"
     _attach_feature_order_from_model()
     logger.info(
@@ -131,31 +158,61 @@ def _try_mlflow_alias(alias: str) -> bool:
 
 
 def _load_from_mlflow() -> bool:
-    """Prefer @champion, then fall back to highest version."""
+    """
+    Serve exactly one human-chosen champion.
+
+    Resolution order:
+      1. If MLFLOW_MODEL_VARIANT is set → load that model @champion only
+      2. Else discover which teacher-mental-health-risk-* has @champion
+      3. Never use @latest
+
+    If no unique champion exists, return False (local artifacts / degraded).
+    """
+    global MLFLOW_MODEL_NAME
+
     if not MLFLOW_LOAD_REGISTRY:
         return False
 
-    # User-configured alias first (default: champion)
-    preferred = MLFLOW_MODEL_ALIAS or "champion"
-    attempts = [preferred]
-    if preferred.lower() != "latest":
-        attempts.append("latest")  # highest version fallback
+    preferred = (MLFLOW_MODEL_ALIAS or "champion").strip() or "champion"
+    if preferred.lower() == "latest":
+        logger.error(
+            "MLFLOW_MODEL_ALIAS=latest is not allowed for serving. "
+            "Assign @champion in the MLflow UI on exactly one model."
+        )
+        return False
 
-    last_err: Optional[Exception] = None
-    for alias in attempts:
-        try:
-            return _try_mlflow_alias(alias)
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            logger.warning(
-                "MLflow load failed for %s@%s: %s",
-                MLFLOW_MODEL_NAME,
-                alias,
-                exc,
+    try:
+        if MLFLOW_MODEL_VARIANT:
+            target = resolve_registered_model_name(
+                base=MLFLOW_REGISTRY_BASE, variant=MLFLOW_MODEL_VARIANT
             )
-    if last_err:
-        logger.warning("All MLflow registry attempts failed: %s", last_err)
-    return False
+            logger.info(
+                "Using pinned variant %s → %s@%s",
+                MLFLOW_MODEL_VARIANT,
+                target,
+                preferred,
+            )
+        else:
+            discovered = discover_champion_model(
+                base=MLFLOW_REGISTRY_BASE,
+                alias=preferred,
+                tracking_uri=MLFLOW_TRACKING_URI,
+            )
+            target = discovered["name"]
+            MODEL_REGISTRY_INFO = {**discovered}
+            logger.info("Auto-discovered champion model: %s", target)
+
+        return _try_mlflow_alias(target, preferred)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "MLflow champion load failed (base=%s alias=%s): %s. "
+            "In MLflow UI set @champion on exactly one of %s-meta1…meta4/rf.",
+            MLFLOW_REGISTRY_BASE,
+            preferred,
+            exc,
+            MLFLOW_REGISTRY_BASE,
+        )
+        return False
 
 
 def _load_from_local_artifacts() -> bool:
@@ -241,6 +298,27 @@ except Exception as e:
     MODEL_REGISTRY_INFO = {"error": str(e)}
     LOAD_ERROR = str(e)
 
+def _configure_evidently_scheduler() -> None:
+    def _runner() -> Dict[str, Any]:
+        sched = load_schedule()
+        return run_drift_check(
+            build_reference=bool(sched.get("build_reference")),
+            model=MODEL if MODEL is not None else None,
+            feature_order=FEATURE_ORDER or None,
+            min_current_rows=int(sched.get("min_current_rows") or 30),
+        )
+
+    configure_runner(_runner)
+    start_or_refresh_scheduler()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _configure_evidently_scheduler()
+    yield
+    stop_scheduler()
+
+
 app = FastAPI(
     title="Teacher Mental Health Risk Prediction API",
     description="""
@@ -259,15 +337,19 @@ Invalid inputs return **HTTP 400** with clear errors before prediction
 
 ### Monitoring (Evidently)
 Successful predictions are logged; compare production vs training (Feast) for data/prediction drift  
-via `/monitoring/*` endpoints.
+via `/monitoring/*` endpoints. Platform can schedule drift jobs.
+
+### Feast
+`POST /feast/upload` — upload survey Excel/CSV, version, and materialize.
 
 ### Model selection
-Configured via env (`MLFLOW_REGISTERED_MODEL_NAME`, `MLFLOW_MODEL_ALIAS`).  
-Promote models only in the **MLflow UI**.
+Serving discovers whichever `teacher-mental-health-risk-*` has `@champion`
+in the MLflow UI (exactly one). Optional pin: `MLFLOW_MODEL_VARIANT=meta1`.
     """,
-    version="1.4.0-monitored",
+    version="1.5.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -336,8 +418,13 @@ def _run_prediction(
         logger.warning("Prediction logging failed (monitoring): %s", exc)
 
     risk_label = "High" if pred_class == 1 else "Low"
+    phq = estimate_phq9_from_probability(proba)
     risk_level = (
-        "High Risk (PHQ-9 equivalent ≥15)" if pred_class == 1 else "Low Risk"
+        f"High Risk — estimated PHQ-9 {phq['phq9_estimated']}/27 "
+        f"({phq['phq9_interpretation']})"
+        if pred_class == 1
+        else f"Low Risk — estimated PHQ-9 {phq['phq9_estimated']}/27 "
+        f"({phq['phq9_interpretation']})"
     )
     if proba >= 0.85:
         confidence = "Very High"
@@ -353,6 +440,10 @@ def _run_prediction(
         predicted_risk=risk_label,
         risk_level=risk_level,
         confidence=confidence,
+        phq9_estimated=int(phq["phq9_estimated"]),
+        phq9_severity=str(phq["phq9_severity"]),
+        phq9_interpretation=str(phq["phq9_interpretation"]),
+        phq9_note=str(phq["phq9_note"]),
         features_used=len(FEATURE_ORDER),
         fields_provided=provided,
         defaults_applied=True,
@@ -381,20 +472,21 @@ async def model_info():
         "registry": MODEL_REGISTRY_INFO,
         "tracking_uri": MLFLOW_TRACKING_URI,
         "preferred_alias": MLFLOW_MODEL_ALIAS,
+        "registered_model_base": MLFLOW_REGISTRY_BASE,
+        "model_variant_pin": MLFLOW_MODEL_VARIANT or None,
         "registered_model": MLFLOW_MODEL_NAME,
         "registered_models_equal": [
-            "teacher-mental-health-risk-meta1",
-            "teacher-mental-health-risk-meta2",
-            "teacher-mental-health-risk-meta3",
-            "teacher-mental-health-risk-meta4",
-            "teacher-mental-health-risk-rf",
+            f"{REGISTRY_BASE_NAME}-{v}" for v in VALID_MODEL_VARIANTS
         ],
         "load_order": [
-            f"MLflow {MLFLOW_MODEL_NAME}@{MLFLOW_MODEL_ALIAS}",
-            "MLflow highest version (if champion missing)",
+            f"MLflow discover @{MLFLOW_MODEL_ALIAS} under {MLFLOW_REGISTRY_BASE}-* "
+            "(or pinned MLFLOW_MODEL_VARIANT)",
             "local artifacts/*.joblib",
         ],
-        "note": "Serving prefers MLflow alias 'champion'. Assign it in the MLflow UI.",
+        "note": (
+            "Serve exactly one human-chosen @champion from the MLflow UI. "
+            "Do not put @champion on more than one meta model. @latest is never used."
+        ),
         "ethical_note": "Screening support tool only — not a clinical diagnosis.",
     }
 
@@ -688,7 +780,10 @@ async def monitoring_run_drift(
 
 @app.get("/monitoring/report", tags=["Monitoring"])
 async def monitoring_report():
-    """Serve the latest Evidently HTML drift report."""
+    """
+    Serve the latest Evidently HTML report **inline** (for iframe / fetch→srcdoc).
+    Does not force a file download.
+    """
     latest = REPORTS_DIR / "latest_drift_report.html"
     if not latest.exists():
         raise HTTPException(
@@ -698,11 +793,158 @@ async def monitoring_report():
                 "generate /predict traffic, then POST /monitoring/run-drift."
             ),
         )
-    return FileResponse(
-        path=str(latest),
-        media_type="text/html",
-        filename="latest_drift_report.html",
+    html = latest.read_text(encoding="utf-8", errors="replace")
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "frame-ancestors *",
+        },
     )
+
+
+@app.get("/monitoring/schedule", tags=["Monitoring"])
+async def monitoring_schedule_get():
+    """Current Evidently job schedule (in-process platform scheduler)."""
+    return load_schedule()
+
+
+@app.post("/monitoring/schedule", tags=["Monitoring"])
+async def monitoring_schedule_set(
+    enabled: bool = True,
+    interval_hours: float = 24.0,
+    build_reference: bool = False,
+    min_current_rows: int = 30,
+):
+    """
+    Enable/update platform scheduling for Evidently drift checks.
+    Interval minimum = 0.25 hours (15 minutes).
+    """
+    try:
+        return upsert_schedule(
+            enabled=enabled,
+            interval_hours=interval_hours,
+            build_reference=build_reference,
+            min_current_rows=min_current_rows,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.delete("/monitoring/schedule", tags=["Monitoring"])
+async def monitoring_schedule_clear():
+    """Disable scheduled Evidently jobs."""
+    return stop_scheduler()
+
+
+@app.post("/feast/upload", tags=["Feast"])
+async def feast_upload(
+    file: UploadFile = File(..., description="Survey Excel (.xlsx) or CSV"),
+    skip_materialize: bool = Form(False),
+    version_label: Optional[str] = Form(None),
+):
+    """
+    Upload a survey file, version it under data/feast/uploads/, run the Feast pipeline
+    (process → parquet → optional apply/materialize).
+    """
+    from src.data.feast_pipeline import FEAST_DATA, run_pipeline
+
+    name = (file.filename or "upload.xlsx").strip()
+    lower = name.lower()
+    if not (lower.endswith(".xlsx") or lower.endswith(".xls") or lower.endswith(".csv")):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload must be .xlsx, .xls, or .csv",
+        )
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    version = (version_label or stamp).strip().replace(" ", "_")
+    dest_dir = FEAST_DATA / "uploads" / version
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / Path(name).name
+
+    try:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+    finally:
+        await file.close()
+
+    # CSV → temporary Excel-compatible path via pandas if needed
+    data_path = dest
+    if lower.endswith(".csv"):
+        try:
+            import pandas as pd
+
+            xlsx_path = dest_dir / (Path(name).stem + ".xlsx")
+            pd.read_csv(dest).to_excel(xlsx_path, index=False)
+            data_path = xlsx_path
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Could not convert CSV: {e}"
+            ) from e
+
+    try:
+        result = run_pipeline(
+            data_path=str(data_path),
+            skip_materialize=skip_materialize,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # Version manifest
+    manifest = {
+        "version": version,
+        "uploaded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "original_filename": name,
+        "stored_path": str(dest.relative_to(FEAST_DATA.parent.parent))
+        if FEAST_DATA.parent.parent in dest.parents
+        else str(dest),
+        "skip_materialize": skip_materialize,
+        "pipeline": result,
+    }
+    (dest_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str),
+        encoding="utf-8",
+    )
+    # pointer to current
+    current = FEAST_DATA / "current_upload.json"
+    current.write_text(
+        json.dumps(
+            {"version": version, "uploaded_at_utc": manifest["uploaded_at_utc"]},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {"success": True, **manifest}
+
+
+@app.get("/feast/versions", tags=["Feast"])
+async def feast_versions():
+    """List uploaded Feast data versions (newest first)."""
+    from src.data.feast_pipeline import FEAST_DATA
+
+    root = FEAST_DATA / "uploads"
+    versions: List[Dict[str, Any]] = []
+    if root.exists():
+        for d in sorted(root.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            man = d / "manifest.json"
+            if man.exists():
+                try:
+                    versions.append(json.loads(man.read_text(encoding="utf-8")))
+                    continue
+                except Exception:  # noqa: BLE001
+                    pass
+            versions.append({"version": d.name, "path": str(d)})
+    current = None
+    cur_path = FEAST_DATA / "current_upload.json"
+    if cur_path.exists():
+        try:
+            current = json.loads(cur_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            current = None
+    return {"current": current, "versions": versions, "count": len(versions)}
 
 
 @app.get("/", tags=["Root"])
@@ -716,10 +958,13 @@ async def root():
         "predict_full": "POST /predict/full (engineered features + defaults)",
         "validate_questionnaire": "POST /validate/questionnaire",
         "validate_feast": "GET /validate/feast",
+        "feast_upload": "POST /feast/upload",
+        "feast_versions": "GET /feast/versions",
         "monitoring_status": "GET /monitoring/status",
         "monitoring_build_reference": "POST /monitoring/build-reference",
         "monitoring_run_drift": "POST /monitoring/run-drift",
         "monitoring_report": "GET /monitoring/report",
+        "monitoring_schedule": "GET/POST/DELETE /monitoring/schedule",
         "model_source": MODEL_SOURCE,
         "model_name": MODEL_NAME,
         "validation": "enabled",

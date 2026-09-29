@@ -41,13 +41,14 @@ logger = logging.getLogger(__name__)
 
 ArrayLike = Union[pd.DataFrame, np.ndarray]
 
-# Equal registry names — no model is special-cased as "production"
+# Equal registry names — family base + variant (no model is auto-production)
+REGISTRY_BASE_NAME = "teacher-mental-health-risk"
 REGISTERED_MODEL_NAMES = {
-    "meta1": "teacher-mental-health-risk-meta1",
-    "meta2": "teacher-mental-health-risk-meta2",
-    "meta3": "teacher-mental-health-risk-meta3",
-    "meta4": "teacher-mental-health-risk-meta4",
-    "rf": "teacher-mental-health-risk-rf",
+    "meta1": f"{REGISTRY_BASE_NAME}-meta1",
+    "meta2": f"{REGISTRY_BASE_NAME}-meta2",
+    "meta3": f"{REGISTRY_BASE_NAME}-meta3",
+    "meta4": f"{REGISTRY_BASE_NAME}-meta4",
+    "rf": f"{REGISTRY_BASE_NAME}-rf",
 }
 
 META_DESCRIPTIONS = {

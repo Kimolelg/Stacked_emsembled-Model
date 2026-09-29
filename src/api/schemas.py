@@ -171,6 +171,24 @@ class PredictionOutput(BaseModel):
     predicted_risk: Literal["Low", "High"]
     risk_level: str
     confidence: Optional[str] = None
+    phq9_estimated: Optional[int] = Field(
+        None,
+        ge=0,
+        le=27,
+        description="Estimated PHQ-9 total (0–27) calibrated from High_Risk probability",
+    )
+    phq9_severity: Optional[str] = Field(
+        None,
+        description="minimal | mild | moderate | moderately_severe | severe",
+    )
+    phq9_interpretation: Optional[str] = Field(
+        None,
+        description="Human-readable PHQ-9 severity band",
+    )
+    phq9_note: Optional[str] = Field(
+        None,
+        description="Caveat that score is model-estimated, not a completed PHQ-9 form",
+    )
     features_used: int = Field(..., description="Length of full model feature vector")
     fields_provided: Optional[List[str]] = Field(
         None, description="Questionnaire fields / overrides the client supplied"

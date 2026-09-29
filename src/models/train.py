@@ -5,10 +5,11 @@ Model Training Pipeline
 Trains Meta-Models 1–4 (and optional RF) equally:
   - Local joblib artifacts
   - MLflow Tracking (params + full metrics including accuracy/precision/recall)
-  - MLflow Model Registry registration with @latest only
+  - MLflow Model Registry registration (new version only; no @champion)
 
-No model is auto-promoted to production. Assign @champion (or any alias)
-in the MLflow UI after comparing runs.
+No model is auto-promoted to production. MLflow may show a built-in @latest
+in the UI (= newest version). Assign @champion yourself in the MLflow UI
+before pointing the API at the registry.
 
 Usage:
   python src/models/train.py --data_path survey.xlsx --model meta1
@@ -152,7 +153,7 @@ def _mlflow_log(
     mlflow_experiment: Optional[str],
     registered_model_name: Optional[str],
 ) -> Dict[str, Any]:
-    """Register model equally: @latest only. No champion/challenger in code."""
+    """Register model equally as a new version. No champion/challenger in code."""
     if not use_mlflow:
         return {}
     from src.utils.mlflow_tracking import log_training_run

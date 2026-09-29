@@ -4,8 +4,9 @@ MLflow Tracking + Model Registry helpers
 
 Components:
 - Experiment tracking (params, metrics, artifacts, tags)
-- Model Registry (registers versions; only sets @latest in code)
-- Promotion aliases (@champion etc.) are set manually in the MLflow UI
+- Model Registry (registers new versions; never auto-sets @champion)
+- MLflow UI always shows a built-in @latest (= highest version) — that is MLflow, not our code
+- Promotion alias @champion is set manually in the MLflow UI only
 - pyfunc wrapper for sklearn-like / MetaModel4 packages
 
 Default local server (start separately):
@@ -29,19 +30,136 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Defaults aligned with local MLflow server from the tutorial
+# Defaults aligned with local MLflow server
 DEFAULT_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
 DEFAULT_EXPERIMENT = os.environ.get(
     "MLFLOW_EXPERIMENT_NAME", "teacher-mental-health-risk"
 )
-DEFAULT_REGISTERED_MODEL = os.environ.get(
-    "MLFLOW_REGISTERED_MODEL_NAME", "teacher-mental-health-risk-meta4"
-)
+# Base registry family name — append variant via MLFLOW_MODEL_VARIANT (meta1|meta2|meta3|meta4|rf)
+REGISTRY_BASE_NAME = "teacher-mental-health-risk"
+VALID_MODEL_VARIANTS = ("meta1", "meta2", "meta3", "meta4", "rf")
 CHAMPION_ALIAS = "champion"
 CHALLENGER_ALIAS = "challenger"
 LATEST_ALIAS = "latest"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_registered_model_name(
+    base: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> str:
+    """
+    Build a full MLflow registered model name from base + optional variant.
+
+    Env:
+      MLFLOW_REGISTERED_MODEL_NAME=teacher-mental-health-risk   # base / family
+      MLFLOW_MODEL_VARIANT=meta1                                # optional pin
+
+    If variant is empty, returns the base name only (serving should then
+    discover which *-metaN / *-rf currently holds @champion).
+    """
+    raw_base = (
+        base
+        if base is not None
+        else os.environ.get("MLFLOW_REGISTERED_MODEL_NAME", REGISTRY_BASE_NAME)
+    ).strip()
+    if variant is not None:
+        raw_variant = str(variant).strip().lower()
+    else:
+        raw_variant = os.environ.get("MLFLOW_MODEL_VARIANT", "").strip().lower()
+
+    known_suffixes = tuple(f"-{v}" for v in VALID_MODEL_VARIANTS)
+    if any(raw_base.endswith(s) for s in known_suffixes):
+        return raw_base
+
+    if not raw_variant:
+        return raw_base or REGISTRY_BASE_NAME
+
+    if raw_variant not in VALID_MODEL_VARIANTS:
+        raise ValueError(
+            f"Invalid MLFLOW_MODEL_VARIANT={raw_variant!r}. "
+            f"Expected one of {VALID_MODEL_VARIANTS}"
+        )
+    family = raw_base or REGISTRY_BASE_NAME
+    return f"{family}-{raw_variant}"
+
+
+def discover_champion_model(
+    *,
+    base: Optional[str] = None,
+    alias: str = CHAMPION_ALIAS,
+    tracking_uri: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Find the single registered model under ``base`` that has ``alias`` (champion).
+
+    Humans set @champion in the MLflow UI on exactly one of:
+      teacher-mental-health-risk-meta1 … meta4 / -rf
+
+    Returns dict: name, version, source, alias, candidates_checked.
+    Raises ValueError if none or multiple champions exist.
+    """
+    _, _, MlflowClient = _import_mlflow()
+    configure_mlflow(tracking_uri=tracking_uri, allow_file_fallback=True)
+    client = MlflowClient()
+    family = (base or os.environ.get("MLFLOW_REGISTERED_MODEL_NAME", REGISTRY_BASE_NAME)).strip()
+    alias = (alias or CHAMPION_ALIAS).strip()
+
+    checked: List[str] = []
+    found: List[Dict[str, Any]] = []
+
+    # Prefer known variant names first, then any other registry names with the prefix
+    candidate_names = [f"{family}-{v}" for v in VALID_MODEL_VARIANTS]
+    try:
+        for rm in client.search_registered_models(max_results=200):
+            if rm.name.startswith(family) and rm.name not in candidate_names:
+                candidate_names.append(rm.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not list registered models broadly: %s", exc)
+
+    for name in candidate_names:
+        checked.append(name)
+        try:
+            mv = client.get_model_version_by_alias(name, alias)
+        except Exception:  # noqa: BLE001
+            continue
+        found.append(
+            {
+                "name": name,
+                "version": str(mv.version),
+                "source": mv.source,
+                "alias": alias,
+                "run_id": getattr(mv, "run_id", None),
+            }
+        )
+
+    if not found:
+        raise ValueError(
+            f"No registered model under '{family}-*' has alias @{alias}. "
+            f"In MLflow UI, open one model (meta1…meta4/rf) → Add Alias → {alias}. "
+            f"Checked: {checked}"
+        )
+    if len(found) > 1:
+        names = [f["name"] for f in found]
+        raise ValueError(
+            f"Multiple models have @{alias}: {names}. "
+            "Delete the alias from all but the one model you want to serve."
+        )
+    result = found[0]
+    result["candidates_checked"] = checked
+    logger.info(
+        "Discovered serving model %s@%s (version %s)",
+        result["name"],
+        alias,
+        result["version"],
+    )
+    return result
+
+
+DEFAULT_REGISTERED_MODEL = resolve_registered_model_name(
+    variant=os.environ.get("MLFLOW_MODEL_VARIANT", "") or None
+)
 
 
 def _import_mlflow():
@@ -108,13 +226,15 @@ def _build_pyfunc_class():
         """
 
         def load_context(self, context):
-            self.model = joblib.load(context.artifacts["model"])
+            # Normalize Windows backslashes so Linux/Docker can resolve artifact paths
+            model_path = str(context.artifacts["model"]).replace("\\", "/")
+            self.model = joblib.load(model_path)
             fo_path = context.artifacts.get("feature_order")
-            self.feature_order: Optional[List[str]] = (
-                joblib.load(fo_path)
-                if fo_path
-                else getattr(self.model, "feature_order", None)
-            )
+            if fo_path:
+                fo_path = str(fo_path).replace("\\", "/")
+                self.feature_order = list(joblib.load(fo_path))
+            else:
+                self.feature_order = getattr(self.model, "feature_order", None)
 
         def _align(self, model_input: Union[pd.DataFrame, np.ndarray, List]) -> Any:
             if isinstance(model_input, pd.DataFrame):
@@ -173,8 +293,9 @@ def log_training_run(
     """
     Log one training run: params, metrics, artifacts, model + registry.
 
-    By default only @latest is set. Champion/challenger promotion is for the
-    MLflow UI (or explicit flags) — no model is auto-picked as production.
+    Registers a new model version only. Does not set @champion unless
+    set_champion=True (default False). MLflow itself may display a built-in
+    @latest alias in the UI (= highest version); that is not production.
 
     Returns dict with run_id, model_uri, version, aliases applied.
     """
@@ -310,14 +431,14 @@ def log_training_run(
 
 def resolve_model_uri(
     model_name: Optional[str] = None,
-    alias: str = LATEST_ALIAS,
+    alias: str = CHAMPION_ALIAS,
     tracking_uri: Optional[str] = None,
 ) -> str:
     """
-    Build a models:/ URI.
+    Build a models:/ URI for a UI-assigned alias (default: champion).
 
-    'latest' is reserved in MLflow 2.x — we resolve the highest version number
-    instead of using @latest. Other aliases (e.g. champion set in the UI) use @alias.
+    Passing alias='latest' resolves to the highest version number (MLflow's
+    built-in notion of latest). Serving code must not use that for production.
     """
     mlflow, _, MlflowClient = _import_mlflow()
     configure_mlflow(tracking_uri=tracking_uri, allow_file_fallback=True)
@@ -334,22 +455,81 @@ def resolve_model_uri(
     return f"models:/{name}@{alias}"
 
 
+def _load_joblib_from_model_version_source(source: str) -> Any:
+    """
+    Direct joblib load from a model version source directory.
+    Survives Windows→Linux path quirks in MLflow pyfunc MLmodel files.
+    """
+    raw = source.replace("file:///", "").replace("file://", "")
+    # Docker shared store rewrite
+    host_marker = "Teachers Mental Health/mlruns"
+    if host_marker.replace("\\", "/") in raw.replace("\\", "/"):
+        # map .../mlruns/... -> /mlflow/mlruns/... when running in compose
+        idx = raw.replace("\\", "/").lower().rfind("/mlruns/")
+        if idx >= 0:
+            candidate = Path("/mlflow") / raw.replace("\\", "/")[idx + 1 :]
+            if candidate.exists() or (candidate.parent / "artifacts" / "model.joblib").exists():
+                raw = str(candidate)
+    root = Path(raw.replace("\\", "/"))
+    candidates = [
+        root / "artifacts" / "model.joblib",
+        root / "model.joblib",
+        root,
+    ]
+    for c in candidates:
+        if c.is_file() and c.suffix == ".joblib":
+            return joblib.load(c)
+        if c.is_dir():
+            job = c / "artifacts" / "model.joblib"
+            if job.exists():
+                return joblib.load(job)
+    raise FileNotFoundError(f"No model.joblib under registry source: {source}")
+
+
 def load_model_from_registry(
     model_name: Optional[str] = None,
-    alias: str = LATEST_ALIAS,
+    alias: str = CHAMPION_ALIAS,
     tracking_uri: Optional[str] = None,
 ) -> Any:
     """
-    Load a model from the registry.
+    Load a model from the registry by alias (default: champion).
 
-    Prefer an alias assigned in the MLflow UI (e.g. champion).
-    Default 'latest' resolves to the highest registered version (no auto-production).
+    Tries MLflow pyfunc first; on Windows→Linux path failures, loads the
+    underlying joblib from the version source directory under /mlflow/mlruns.
     """
-    mlflow, mlflow_pyfunc, _ = _import_mlflow()
-    uri = resolve_model_uri(model_name=model_name, alias=alias, tracking_uri=tracking_uri)
+    mlflow, mlflow_pyfunc, MlflowClient = _import_mlflow()
+    configure_mlflow(tracking_uri=tracking_uri, allow_file_fallback=True)
+    name = model_name or DEFAULT_REGISTERED_MODEL
+    uri = resolve_model_uri(model_name=name, alias=alias, tracking_uri=tracking_uri)
     logger.info("Loading model from registry: %s", uri)
-    loaded = mlflow_pyfunc.load_model(uri)
-    return RegistryModelAdapter(loaded, source=uri)
+
+    try:
+        loaded = mlflow_pyfunc.load_model(uri)
+        return RegistryModelAdapter(loaded, source=uri)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pyfunc load failed (%s); trying direct joblib from version source", exc)
+        client = MlflowClient()
+        if alias is None or str(alias).lower() in ("", "latest"):
+            versions = client.search_model_versions(f"name='{name}'")
+            if not versions:
+                raise
+            mv = max(versions, key=lambda v: int(v.version))
+        else:
+            mv = client.get_model_version_by_alias(name, alias)
+        model = _load_joblib_from_model_version_source(mv.source)
+        # Attach feature_order from sibling artifact when possible
+        raw = str(mv.source).replace("file:///", "").replace("file://", "").replace("\\", "/")
+        if "/mlruns/" in raw and not raw.startswith("/mlflow/"):
+            idx = raw.find("/mlruns/")
+            raw = "/mlflow" + raw[idx:]
+        fo = Path(raw) / "artifacts" / "feature_order.joblib"
+        if fo.exists() and not getattr(model, "feature_order", None):
+            try:
+                model.feature_order = list(joblib.load(fo))
+            except Exception:  # noqa: BLE001
+                pass
+        logger.info("Loaded champion via direct joblib from %s", mv.source)
+        return model
 
 
 class RegistryModelAdapter:
@@ -400,10 +580,10 @@ class RegistryModelAdapter:
 
 def get_model_info(
     model_name: Optional[str] = None,
-    alias: str = LATEST_ALIAS,
+    alias: str = CHAMPION_ALIAS,
     tracking_uri: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return registry metadata for health / model-info endpoints."""
+    """Return registry metadata for health / model-info endpoints (default: champion)."""
     _, _, MlflowClient = _import_mlflow()
     configure_mlflow(tracking_uri=tracking_uri, allow_file_fallback=True)
     name = model_name or DEFAULT_REGISTERED_MODEL

@@ -32,6 +32,7 @@ def _xy(n=100, p=8, seed=0):
     return X, y
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "trainer",
     [train_meta_model1, train_meta_model2],
@@ -50,6 +51,7 @@ def test_meta12_smoke(trainer):
     assert pred.shape[0] == 5
 
 
+@pytest.mark.slow
 def test_meta3_threshold():
     X, y = _xy(n=120)
     X_tr, X_te = X.iloc[:90], X.iloc[90:]

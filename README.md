@@ -133,8 +133,15 @@ Each layer **does not replace** the previous one — it wraps or consumes it. Pr
 Teachers Mental Health/
 │
 ├── README.md                          # This handover document
-├── requirements.txt                   # Pinned stack (Python 3.11)
-├── Dockerfile                         # Container entry for API (basic)
+├── requirements.txt                   # Full train/ops stack (Python 3.11)
+├── requirements-serve.txt             # Slimmer API/Docker runtime deps
+├── requirements-dev.txt               # pytest / flake8 / httpx (+ serve)
+├── Dockerfile                         # FastAPI serving image
+├── Dockerfile.mlflow                  # Local MLflow server image
+├── docker-compose.yml                 # API + MLflow (minimal Section 7)
+├── .dockerignore
+├── pytest.ini
+├── .github/workflows/ci.yml           # Lint + pytest + docker build
 ├── .gitignore
 │
 ├── src/                               # All application code
@@ -394,9 +401,8 @@ mlflow db upgrade sqlite:///mlflow.db
 
 ### Model load strategy
 
-1. If `MLFLOW_LOAD_REGISTRY=1` and server reachable: try alias (`MLFLOW_MODEL_ALIAS`, default `champion`).
-2. Else load highest registry version for `MLFLOW_REGISTERED_MODEL_NAME`.
-3. Else load local `artifacts/meta_model4.joblib` (or meta*.joblib) + `feature_order.joblib`.
+1. If `MLFLOW_LOAD_REGISTRY=1` and server reachable: load **only** `{MLFLOW_REGISTERED_MODEL_NAME}-{MLFLOW_MODEL_VARIANT}@{MLFLOW_MODEL_ALIAS}` (defaults: base `teacher-mental-health-risk`, variant `meta4`, alias `champion`). **No `@latest` fallback.**
+2. Else load local `artifacts/meta*.joblib` + `feature_order.joblib`.
 
 ### Two prediction paths (same endpoint family)
 
@@ -412,17 +418,21 @@ This is intentional: live screening for new teachers uses the questionnaire; bat
 ```powershell
 $env:MLFLOW_LOAD_REGISTRY = "1"
 $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
-$env:MLFLOW_REGISTERED_MODEL_NAME = "teacher-mental-health-risk-meta4"
+$env:MLFLOW_REGISTERED_MODEL_NAME = "teacher-mental-health-risk"   # base family
+$env:MLFLOW_MODEL_VARIANT = "meta4"                                # meta1|meta2|meta3|meta4|rf
 $env:MLFLOW_MODEL_ALIAS = "champion"
 
 uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 # Swagger: http://127.0.0.1:8000/docs
 ```
 
+Resolved registry id = `{base}-{variant}` → e.g. `teacher-mental-health-risk-meta4`.
+
 Without registry:
 
 ```powershell
 # unset registry load; uses artifacts/
+$env:MLFLOW_LOAD_REGISTRY = "0"
 uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -630,7 +640,8 @@ $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 # 4) API
 $env:MLFLOW_LOAD_REGISTRY = "1"
 $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
-$env:MLFLOW_REGISTERED_MODEL_NAME = "teacher-mental-health-risk-meta4"
+$env:MLFLOW_REGISTERED_MODEL_NAME = "teacher-mental-health-risk"
+$env:MLFLOW_MODEL_VARIANT = "meta4"
 $env:MLFLOW_MODEL_ALIAS = "champion"
 uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 
@@ -851,12 +862,110 @@ Human oversight is **required** for any high-risk flag.
 - [ ] Rebuild drift reference after major feature shifts
 - [ ] Keep disclaimers on API responses and any UI
 
-**Out of current scope (future work)**
+**Deferred (beyond Section 7 minimal)**
 
-- Full CI/CD promotion gates
-- Hardened Docker multi-service compose (MLflow + API + Feast)
+- Cloud deploy / auto `@champion` promotion
+- Feast + Evidently as compose services
 - SHAP explainability endpoint for case-level review
 - AuthN/AuthZ on API and PII handling beyond anonymized `teacher_id`
+
+---
+
+## 22. Section 7 — Tests, Docker & CI/CD
+
+### Automated tests (pre-push)
+
+```powershell
+.\venv\Scripts\Activate.ps1
+$env:MLFLOW_LOAD_REGISTRY = "0"
+pytest tests/ -q -m "not slow and not integration"
+```
+
+- Fast path excludes `@slow` (meta-model smoke trains) and `@integration` (real joblib predict).
+- API coverage: `tests/test_api.py` (FastAPI `TestClient` + stub model — no live uvicorn).
+- Optional: `pytest -m integration` when `artifacts/` exist.
+
+Dev deps: `pip install -r requirements-dev.txt`
+
+### Docker (API + MLflow)
+
+Requires **Docker Desktop** (WSL2 backend on Windows).
+
+```powershell
+# Ensure artifacts/ has feature_order.joblib + at least one meta*.joblib
+docker compose up --build
+```
+
+| Service | URL |
+|---------|-----|
+| API docs | http://127.0.0.1:8000/docs |
+| MLflow UI | http://127.0.0.1:5000 |
+
+- API image uses `requirements-serve.txt` (slimmer than full train stack).
+- `./artifacts` is **volume-mounted** (not baked into the image).
+- Compose MLflow data: `./docker_data/mlflow/` (gitignored).
+- Feast / Evidently stay on the host via `scripts/` for this phase.
+- Set `MLFLOW_LOAD_REGISTRY=1` on the `api` service after assigning `@champion` in the UI.
+
+### GitHub Actions
+
+`.github/workflows/ci.yml` on push/PR to `main`/`master`:
+
+1. Python **3.11** → install `requirements-dev.txt` → flake8 → `pytest -m "not slow and not integration"`
+2. `docker build` API image (no registry push)
+3. **Does not** retrain models or set `@champion`
+
+### Artifacts policy
+
+| Context | Model source |
+|---------|----------------|
+| Local venv | `artifacts/*.joblib` and/or MLflow `@champion` |
+| Compose | Mount `./artifacts`; optional registry via env |
+| CI | Stub model in unit tests; image build does not need joblibs |
+
+---
+
+## 23. React frontend (Screening + Monitoring)
+
+Separate Vite app in `frontend/` (does **not** auto-promote models; Feast/Evidently stay on host).
+
+```powershell
+# Terminal A — API
+.\venv\Scripts\Activate.ps1
+$env:MLFLOW_LOAD_REGISTRY = "0"
+uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
+
+# Terminal B — UI
+cd frontend
+npm install
+npm run dev
+```
+
+Or via Docker: `docker compose up --build` → UI at **http://127.0.0.1:3000**
+
+| Page | What it does |
+|------|----------------|
+| **Screening** | Questionnaire or `teacher_id` → risk probability + disclaimer |
+| **Monitoring** | Status + alerts; **Load latest report** only when you click (not auto) |
+
+### Host scheduled jobs (Feast + Evidently)
+
+```powershell
+# Feast (needs survey path)
+.\scripts\schedule_feast_materialize.ps1 -DataPath "C:\path\to\survey.xlsx"
+
+# Evidently drift
+.\scripts\schedule_drift_check.ps1 -BuildReference
+
+# Optional: print / register Windows Task Scheduler tasks (admin for register)
+.\scripts\register_scheduled_jobs.ps1 -DataPath "C:\path\to\survey.xlsx" -PrintOnly
+```
+
+Job logs: `data/monitoring/job_logs/`. Compose mounts `./data/monitoring` into the API so the Monitoring page sees the same reports.
+
+**Locked rules:** no auto `@champion`, no full retrain in CI, Feast/Evidently not Docker services.
+
+Full Docker/CI command list: [`docs/DOCKER_AND_CI_COMMANDS.md`](docs/DOCKER_AND_CI_COMMANDS.md)
 
 ---
 
@@ -866,7 +975,7 @@ Human oversight is **required** for any high-risk flag.
 # Env
 .\venv\Scripts\Activate.ps1
 
-# MLflow
+# MLflow (host)
 .\scripts\start_mlflow_server.ps1
 
 # Feast
@@ -876,19 +985,30 @@ Human oversight is **required** for any high-risk flag.
 python src/models/train.py --data_path "SURVEY.xlsx" --model all
 python src/models/train.py --use-feast --model meta4
 
-# API
+# API (host) — base name + variant
 $env:MLFLOW_LOAD_REGISTRY="1"
 $env:MLFLOW_TRACKING_URI="http://127.0.0.1:5000"
-$env:MLFLOW_REGISTERED_MODEL_NAME="teacher-mental-health-risk-meta4"
+$env:MLFLOW_REGISTERED_MODEL_NAME="teacher-mental-health-risk"
+$env:MLFLOW_MODEL_VARIANT="meta4"
 $env:MLFLOW_MODEL_ALIAS="champion"
 uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 
 # Drift
 .\scripts\run_drift_check.ps1 -BuildReference
 
-# Tests
-pytest tests/ -q
+# Tests (CI-equivalent)
+$env:MLFLOW_LOAD_REGISTRY="0"
+pytest tests/ -q -m "not slow and not integration"
+
+# Docker platform (API + MLflow + UI)
+docker compose up --build
+# UI http://127.0.0.1:3000  API :8000  MLflow :5000
+
+# Frontend (dev, without Docker)
+cd frontend; npm run dev
 ```
+
+See also: [`docs/DOCKER_AND_CI_COMMANDS.md`](docs/DOCKER_AND_CI_COMMANDS.md)
 
 ---
 
